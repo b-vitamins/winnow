@@ -1,0 +1,488 @@
+\documentclass[12pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{enumitem}
+
+\title{Winnow: Software architecture specification}
+\author{Ayan Das}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Purpose of the Document}
+This \textbf{Software Architecture Specification (SAS)} aims to describe the \emph{architectural structure}, \emph{components}, and \emph{interfaces} of the proposed Python-based system that (1) parses large volumes of BibTeX entries, (2) augments missing abstracts from external sources, and (3) filters references relevant to the intersection of Physics and Machine Learning (ML). This document draws upon the requirements established in the \emph{Software Requirements Specification (SRS)} and serves as a bridge between the higher-level requirements and the detailed design (which will be covered in the \emph{Software Design Specification, SDS}).
+
+\subsection{Scope}
+The scope of this SAS is limited to:
+\begin{itemize}
+  \item The \emph{internal} architectural components (e.g., modules for parsing, augmentation, filtering, classification).
+  \item \emph{Integration} with external services (Semantic Scholar, OpenAlex, arXiv, Google Scholar, etc.), as well as potential third-party scrapers.
+  \item \emph{Deployment} concerns and concurrency (process or threading models).
+  \item \emph{Quality attributes} such as scalability, reliability, and maintainability.
+\end{itemize}
+This document follows the general structure recommended by \emph{ISO/IEC/IEEE 42010} and standard industry practices for architecture documentation.
+
+\subsection{Definitions, Acronyms, and Abbreviations}
+\begin{description}[style=nextline]
+  \item[SRS] Software Requirements Specification, describing functional/non-functional requirements.
+  \item[SAS] Software Architecture Specification (this document).
+  \item[SDS] Software Design Specification, describing module/class-level designs.
+  \item[API] Application Programming Interface.
+  \item[CLI] Command-Line Interface.
+  \item[ML] Machine Learning.
+  \item[Parsing Module] A software component responsible for reading `.bib` files and converting them into internal data structures.
+  \item[Filtering Module] A software component that applies text-based or classification-based filtering logic.
+  \item[Augmentation Module] A software component that retrieves missing abstracts from external sources.
+\end{description}
+
+\subsection{References}
+\begin{itemize}
+  \item SRS: \emph{Software Requirements Specification for the BibTeX Aggregation and Filtering Pipeline.}
+  \item IEEE 29148 (Requirements) and ISO/IEC/IEEE 42010 (Architecture).
+  \item Documentation for external services:
+  \begin{itemize}
+    \item Semantic Scholar: \url{https://api.semanticscholar.org}
+    \item OpenAlex: \url{https://docs.openalex.org}
+    \item arXiv: \url{https://arxiv.org/help/api/index}
+  \end{itemize}
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Architectural Drivers}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Key Functional Requirements (Summary)}
+From the SRS, the most critical functional requirements that \emph{shape} this architecture are:
+\begin{enumerate}[label=FR-\arabic*]
+  \item \textbf{FR-1: Directory-Based Discovery.} We must parse large, hierarchical directories of `.bib` files efficiently.
+  \item \textbf{FR-2: Configurable Invariant Checks.} The system must validate that each reference meets certain minimal requirements (title, etc.).
+  \item \textbf{FR-3: Abstract Augmentation with Multiple External Services.} The pipeline must call external APIs in a prioritized or fallback sequence.
+  \item \textbf{FR-4: Keyword-Based Filtering (Physics \& ML Lexicons).} The system must do text-based intersection checks over title + abstract.
+  \item \textbf{FR-5: Optional Text Classification.} For advanced filtering that ensures minimal misses and high precision.
+  \item \textbf{FR-6: Custom Scraper Interface.} A plugin-like mechanism to integrate specialized scrapers or data sources.
+  \item \textbf{FR-7: Logging, Error Handling, and Reporting.} Must be robust, with structured logs, partial failure handling.
+  \item \textbf{FR-8: Final BibTeX Generation.} Combine the curated references into a single or multiple `.bib` outputs.
+\end{enumerate}
+
+\subsection{Non-Functional Requirements / Quality Attributes}
+\begin{itemize}
+  \item \textbf{Scalability \& Performance:} The architecture must handle potentially hundreds of thousands of references without undue memory usage or excessive runtime.
+  \item \textbf{Maintainability:} The code must be modular. Each stage (parse, augment, filter, export) is separated into self-contained components.
+  \item \textbf{Reliability \& Fault Tolerance:} External API calls can fail or be rate-limited; the system must degrade gracefully. 
+  \item \textbf{Extensibility:} Domain lexicons can change; new scrapers can be added without rewriting core modules.
+  \item \textbf{Usability:} Must provide a simple CLI or library interface for the main pipeline.
+  \item \textbf{Security:} API keys must not be logged in plaintext; sensitive data must be restricted in the code or config.
+\end{itemize}
+
+\subsection{Constraints and Assumptions}
+\begin{itemize}
+  \item \textbf{Python 3.x}: The architecture will leverage Python’s ecosystem (e.g., concurrency with multiprocessing or async).
+  \item \textbf{File-Based Input and Output}: `.bib` source files are on a local or networked file system. Output is a single `.bib` or multiple `.bib` files.
+  \item \textbf{Limited Control Over External APIs}: Must handle rate-limits, timeouts, inconsistent data from external services.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Architectural Principles}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Design Philosophy}
+\begin{itemize}
+  \item \textbf{Pipeline-Oriented Architecture:} A linear (or nearly linear) sequence of well-defined stages: \emph{parse} $\rightarrow$ \emph{augment} $\rightarrow$ \emph{filter} $\rightarrow$ \emph{export}. Each stage is loosely coupled but can communicate intermediate results.
+  \item \textbf{Modular and Extensible:} We favor a design that allows \emph{pluggable scrapers} for abstract augmentation and \emph{pluggable classifiers} for advanced text analysis.
+  \item \textbf{Declarative/Functional Approach Where Feasible:} Configuration-based operation, minimal shared mutable state. Where possible, data flows through pure functions or well-defined transformations. 
+  \item \textbf{Error Tolerance and Graceful Degradation:} The system logs errors but keeps processing unaffected references. 
+\end{itemize}
+
+\subsection{Key Architectural Patterns}
+\begin{itemize}
+  \item \textbf{Layered / Tiered Approach:} 
+  \begin{enumerate}
+    \item \textbf{Data Ingestion Layer}: reading `.bib` files, applying invariants. 
+    \item \textbf{Augmentation Layer}: external lookups to gather more data. 
+    \item \textbf{Filtering Layer}: text intersection + classification. 
+    \item \textbf{Export Layer}: final assembly to `.bib`.
+  \end{enumerate}
+  \item \textbf{Plugin or Strategy Pattern for Scrapers}: Each external scraper or data source can implement a standard interface, enabling easy substitution and fallback. 
+  \item \textbf{Configuration-Driven Behavior}: The pipeline’s steps, concurrency, lexicons, etc., are specified in a configuration file or CLI arguments. 
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{System Context and Overview}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{System Context}
+Figure~\ref{fig:systemcontext} (a conceptual diagram) shows the environment in which the pipeline operates:
+
+\begin{itemize}
+  \item \textbf{Users / Researchers}: Provide the root directory with `.bib` files and request the system to produce a curated `.bib`.
+  \item \textbf{File System}: Contains the input `.bib` files. The system outputs curated `.bib` files to it.
+  \item \textbf{External APIs}: The pipeline queries these for missing abstracts. 
+  \item \textbf{Plugin Ecosystem}: Specialized scrapers can be plugged in for certain venues or subscription-based APIs.
+\end{itemize}
+
+\begin{center}
+  % Pseudo figure (text-based for illustration)
+  \fbox{
+    \parbox{0.8\textwidth}{
+      \textbf{System Context Diagram (Conceptual)} \\[1em]
+      \textbf{Users} (CLI) $\longrightarrow$ [Pipeline] $\longrightarrow$ \textbf{File System}\\
+      \hspace*{1.5em} [Pipeline] $\longleftrightarrow$ \textbf{External APIs}\\
+      \hspace*{1.5em} [Pipeline] $\longleftrightarrow$ \textbf{Custom Plugins}\\
+    }
+  }
+\label{fig:systemcontext}
+\end{center}
+
+\subsection{Overview of Major Use Cases}
+The pipeline addresses these primary use cases at the system boundary:
+\begin{enumerate}
+  \item \textbf{Ingest \& Validate References:} Read `.bib` files, parse them, apply invariants, store references in a structured internal format. 
+  \item \textbf{Augment Data:} For references missing abstracts, query external services. Possibly also store a local cache for repeated runs.
+  \item \textbf{Filter \& Classify:} Perform keyword-based intersection or advanced text classification to produce a \emph{candidate set}.
+  \item \textbf{Output Final BibTeX:} Write curated references with new abstract fields to an output file.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Architecture Views}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Logical View}
+\label{sec:logical-view}
+
+\textbf{Purpose:} The Logical View focuses on the \emph{main modules}, their \emph{responsibilities}, and how they \emph{interact} to satisfy the functional requirements.
+
+\subsubsection{Main Subsystems / Modules}
+\begin{enumerate}[label=\alph*)]
+  \item \textbf{InputParser}:
+  \begin{itemize}
+    \item \emph{Responsibility:} Locate all `.bib` files, parse them into an \emph{internal reference object}, apply basic data invariants.
+    \item \emph{Input:} Root directory path, optional config specifying ignore patterns or advanced validation rules.
+    \item \emph{Output:} List (or generator) of reference objects.
+  \end{itemize}
+
+  \item \textbf{AbstractAugmenter}:
+  \begin{itemize}
+    \item \emph{Responsibility:} For each reference lacking an abstract, query external APIs in a fallback sequence (Semantic Scholar, OpenAlex, etc.). 
+    \item \emph{Input:} Reference objects from \texttt{InputParser}.
+    \item \emph{Output:} Updated references with newly added \texttt{abstract} fields (if found). 
+  \end{itemize}
+
+  \item \textbf{FilterEngine}:
+  \begin{itemize}
+    \item \emph{Responsibility:} Apply broad \emph{lexicon-based intersection} or advanced \emph{text classification}. 
+    \item \emph{Input:} References from \texttt{AbstractAugmenter}.
+    \item \emph{Output:} A subset (candidate references) or flagged references with probability scores. 
+  \end{itemize}
+
+  \item \textbf{Exporter}:
+  \begin{itemize}
+    \item \emph{Responsibility:} Merge or group final references, write them to a single `.bib` file. 
+    \item \emph{Input:} Filtered references from \texttt{FilterEngine}.
+    \item \emph{Output:} A curated `.bib` file on the file system. 
+  \end{itemize}
+
+  \item \textbf{ScraperPlugins} (Optional):
+  \begin{itemize}
+    \item \emph{Responsibility:} Specialized modules for certain journals or websites. They implement an interface recognized by \texttt{AbstractAugmenter}.
+  \end{itemize}
+
+  \item \textbf{ClassifierPlugins} (Optional):
+  \begin{itemize}
+    \item \emph{Responsibility:} Provide advanced text classification logic, implementing a standard interface for model inference or training.
+  \end{itemize}
+\end{enumerate}
+
+\subsubsection{Interactions among Modules (High-Level Workflow)}
+\begin{enumerate}
+  \item \textbf{InputParser} scans directories, loads references, and provides them as a list (or a lazy iterator) to the next stage.
+  \item \textbf{AbstractAugmenter} receives references, checks which ones \emph{lack} abstracts, and calls a pipeline of scraper plugins or direct API calls. It updates the references in-place with retrieved abstracts.
+  \item \textbf{FilterEngine} then reads the updated references, runs textual analysis (lexicons or classifiers), and separates references into \emph{kept} vs. \emph{excluded}. 
+  \item \textbf{Exporter} writes the kept references to a user-specified `.bib` file with updated fields.
+\end{enumerate}
+
+\subsection{Process View / Concurrency Model}
+\label{sec:process-view}
+
+\subsubsection{Process Model and Threads}
+Because Python can handle concurrency in multiple ways, we highlight two potential concurrency models:
+
+\begin{enumerate}[label=\Alph*.]
+  \item \textbf{Multi-threaded approach using \emph{ThreadPoolExecutor}}:
+  \begin{itemize}
+    \item Typically beneficial for \emph{I/O-bound} tasks (like external API calls).
+    \item Each API call can be dispatched asynchronously while other references or tasks proceed.
+    \item Care must be taken with Python’s GIL (Global Interpreter Lock) for CPU-bound tasks (like heavy text classification).
+  \end{itemize}
+
+  \item \textbf{Multi-process approach (e.g., \texttt{multiprocessing} or \texttt{Ray})}:
+  \begin{itemize}
+    \item CPU-bound tasks such as \emph{model inference} can be parallelized effectively across processes. 
+    \item External API calls can also be parallelized if we want to avoid blocking in a single process.
+  \end{itemize}
+\end{enumerate}
+
+\textbf{Recommended Hybrid Strategy:}
+\begin{itemize}
+  \item Use an async or thread-pool concurrency for the \emph{abstract augmentation} stage (I/O-bound).
+  \item Use a process-based concurrency (if needed) for \emph{ML classification} if the model is large or CPU-intensive.
+\end{itemize}
+
+\subsubsection{High-Level Concurrency Steps}
+\begin{enumerate}
+  \item \textbf{Parsing Step}: Typically runs single-threaded or multi-threaded, but usually it is fast relative to augmentation, so concurrency might be optional here.
+  \item \textbf{Augmentation Step}: Potentially spawns multiple threads to query external services. Each reference that lacks an abstract is assigned to a worker thread. Results are re-assembled in the main thread. 
+  \item \textbf{Filtering Step}: 
+  \begin{itemize}
+    \item \emph{Lexicon-based intersection} is straightforward and can be done sequentially or with data parallelism. 
+    \item \emph{Classification-based} approaches might spin up multiple processes or a single GPU-based process, depending on user configuration.
+  \end{itemize}
+  \item \textbf{Export Step}: Typically single-threaded, but trivial to parallelize if the final `.bib` writing becomes a bottleneck.
+\end{enumerate}
+
+\subsection{Physical / Deployment View}
+\begin{itemize}
+  \item The \textbf{typical deployment} is on a single server or workstation with network access to external APIs. 
+  \item \textbf{Optional scaling} can occur on HPC clusters or in the cloud (AWS, GCP) if the user wants to handle extremely large `.bib` sets. 
+  \item Minimal infrastructure components:
+    \begin{itemize}
+      \item \textbf{Local File System}: Input, output, logs.
+      \item \textbf{(Optional) Caching Database}: Could be a local SQLite or Redis store for abstract queries.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Data View}
+\label{sec:data-view}
+
+\subsubsection{Conceptual Data Model}
+\begin{description}[style=nextline]
+  \item[Reference Record:] 
+  \begin{itemize}
+    \item \textbf{Key Fields:} \texttt{bibtex\_key}, \texttt{title}, \texttt{authors}, \texttt{year}, \texttt{abstract}, \texttt{venue}, \texttt{doi}, \texttt{url}, \texttt{raw\_bibtex}.
+  \end{itemize}
+\end{description}
+
+Relationships and transformations:
+\begin{enumerate}
+  \item \textbf{Raw `.bib` \(\to\) Reference Object:} The \textbf{InputParser} extracts structured data from the raw BibTeX entry. 
+  \item \textbf{Reference Object + External Service} \(\to\) \textbf{Augmented Reference Object}: \texttt{abstract} is added or updated. 
+  \item \textbf{Reference Object \(\to\) Filter Label}: The \textbf{FilterEngine} adds \emph{candidate or excluded} or a \emph{confidence score}. 
+  \item \textbf{Reference Object \(\to\) Raw `.bib`} for final export.
+\end{enumerate}
+
+\subsubsection{Data Storage and Format}
+\begin{itemize}
+  \item \textbf{In-Memory Representation:} Python dictionaries or data classes. 
+  \item \textbf{Optional Caching:} AbstractAugmenter might maintain a local store keyed by \texttt{(title, doi)} to avoid repeated queries. 
+  \item \textbf{Final Output:} Plain text `.bib` with updated \texttt{abstract} fields.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Interfaces and Integration}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Module Interfaces}
+\begin{enumerate}
+  \item \textbf{InputParser Interface:}
+  \begin{verbatim}
+  parse_bib_files(root_dir: str, config: Config) -> Iterator[ReferenceObject]
+  \end{verbatim}
+  It returns an iterator (or list) of \texttt{ReferenceObject}.
+
+  \item \textbf{AbstractAugmenter Interface:}
+  \begin{verbatim}
+  augment_references(refs: Iterable[ReferenceObject],
+                     config: Config,
+                     scrapers: List[AbstractScraper]) -> None
+  \end{verbatim}
+  This function updates each reference in place with an abstract if found.
+
+  \item \textbf{FilterEngine Interface:}
+  \begin{verbatim}
+  filter_references(refs: Iterable[ReferenceObject],
+                    config: Config,
+                    classifier: Optional[Classifier]) -> List[ReferenceObject]
+  \end{verbatim}
+  Returns references that pass the filter.
+
+  \item \textbf{Exporter Interface:}
+  \begin{verbatim}
+  export_to_bib(refs: List[ReferenceObject],
+                output_path: str,
+                config: Config) -> None
+  \end{verbatim}
+  Writes the final list of references to a `.bib` file.
+\end{enumerate}
+
+\subsection{Plugin Integration}
+\begin{itemize}
+  \item \textbf{ScraperPlugins}:
+  \begin{verbatim}
+  class AbstractScraper:
+      def get_abstract(self, ref: ReferenceObject) -> Optional[str]:
+          ...
+  \end{verbatim}
+  The \textbf{AbstractAugmenter} can call multiple scrapers in a chain, stopping once an abstract is retrieved.
+
+  \item \textbf{ClassifierPlugins}:
+  \begin{verbatim}
+  class Classifier:
+      def load_model(self, model_path: str):
+          ...
+      def predict(self, text: str) -> float:
+          # returns a probability or confidence score
+  \end{verbatim}
+  The \textbf{FilterEngine} can optionally call this to refine the candidate set.
+\end{itemize}
+
+\subsection{External APIs and Integration Points}
+\begin{itemize}
+  \item \textbf{Semantic Scholar API}: 
+    \begin{itemize}
+      \item Integration via HTTP GET or POST with \texttt{requests}.
+      \item A rate-limit or daily quota might apply; the system tracks request counts, logs errors if exceeded.
+    \end{itemize}
+  \item \textbf{OpenAlex API}: 
+    \begin{itemize}
+      \item JSON-based results. The system needs to parse the field that corresponds to the paper’s abstract or summary.
+    \end{itemize}
+  \item \textbf{arXiv API}: 
+    \begin{itemize}
+      \item XML-based feed results. We parse out the \texttt{summary} node for the abstract.
+    \end{itemize}
+  \item \textbf{Google Scholar Scraping}: 
+    \begin{itemize}
+      \item Potentially less stable. We handle it carefully with fallback, logging if blocked or captcha appears.
+    \end{itemize}
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Quality Attributes and Tactics}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Reliability and Fault Tolerance}
+\begin{itemize}
+  \item \textbf{Error Handling and Logging:} Each module logs errors in a structured manner (timestamp, severity, reference ID). If \texttt{AbstractAugmenter} fails on a reference, it logs the error but does not crash the entire pipeline.
+  \item \textbf{Retry Mechanisms:} For external API calls, a short \emph{exponential backoff} can be used if rate limits are encountered.
+  \item \textbf{Fallback to Next Service:} If one service fails or returns no data, the system tries the next. This ensures maximum coverage for abstract retrieval.
+\end{itemize}
+
+\subsection{Scalability and Performance Tactics}
+\begin{itemize}
+  \item \textbf{Parallel I/O for Augmentation:} Using multi-threading or async to handle potentially thousands of references for external calls.
+  \item \textbf{Batch or Bulk Queries (if supported):} Some APIs might allow bulk queries. The system architecture can incorporate a \emph{bulk retrieval plugin} if an API supports it.
+  \item \textbf{Efficient Text Search:} The lexicon-based intersection can use \emph{compiled regex} or a \emph{trie-based approach} for speed. 
+  \item \textbf{Cache Results}: Storing \texttt{(title, abstract)} pairs in a local DB to prevent repeated queries in subsequent runs.
+\end{itemize}
+
+\subsection{Maintainability}
+\begin{itemize}
+  \item \textbf{Modular Codebase}: Each functional stage is in a separate Python module. 
+  \item \textbf{Plugin Interfaces}: Clear contracts for scrapers and classifiers reduce friction when adding new ones.
+  \item \textbf{Configuration-Driven Behavior}: Minimizes the need to change source code to alter lexicons, concurrency, or external endpoints.
+\end{itemize}
+
+\subsection{Security Considerations}
+\begin{itemize}
+  \item \textbf{API Keys or Tokens}: 
+    \begin{itemize}
+      \item Must be stored in external config files or environment variables, not in source code.
+      \item Logging must redact any sensitive information.
+    \end{itemize}
+  \item \textbf{HTTPS Everywhere}: Ensures calls to external services are secure by default. 
+\end{itemize}
+
+\subsection{Usability Tactics}
+\begin{itemize}
+  \item \textbf{CLI Interface with Clear Help/Docs}: \texttt{--help} shows usage, arguments, config paths, etc.
+  \item \textbf{Human-Readable Logging}: In addition to structured logs, provide console-friendly logs with color-coding or labeling.
+  \item \textbf{Summary Report}: At the end of a run, the system can print a summary: how many references were parsed, how many abstracts were retrieved, how many references made it into the final file.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Design Constraints and Rationale}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Key Decisions and Their Rationale}
+\begin{enumerate}[label=\arabic*.]
+  \item \textbf{Use of Python:} 
+    \begin{itemize}
+      \item Rationale: Large ecosystem for text processing, straightforward concurrency for I/O. 
+      \item Trade-off: Python can be slower for CPU-bound tasks, but typically external calls are the bottleneck. 
+    \end{itemize}
+
+  \item \textbf{Pipeline Structure vs. Monolith:}
+    \begin{itemize}
+      \item Rationale: Separation of concerns among parse, augment, filter, export stages fosters maintainability and clarity.
+      \item Trade-off: Passing data among stages can add overhead but fosters clarity and testing.
+    \end{itemize}
+
+  \item \textbf{Lexicon + Classification Hybrid:} 
+    \begin{itemize}
+      \item Rationale: We want high recall (hence broad lexicon-based filter) and high precision (classification to remove false positives).
+      \item Trade-off: Additional complexity requires labeled data for the classification approach. 
+    \end{itemize}
+
+  \item \textbf{Falling back across multiple abstract providers:}
+    \begin{itemize}
+      \item Rationale: Minimizes missed opportunities to retrieve abstracts.
+      \item Trade-off: Requires more complex logic to handle partial or out-of-order successes/failures. 
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Limitations}
+\begin{itemize}
+  \item \textbf{Partial Control Over Abstract Quality:} If external APIs return incorrect or truncated abstracts, the system can do minimal validation, but it might still store an erroneous abstract. 
+  \item \textbf{Data Overlap / Duplicates:} If the same reference is present in multiple `.bib` files with slightly different metadata, the system merges them or picks one. This might introduce duplicates in the final `.bib`. 
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Risks and Technical Debt}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Known Risks}
+\begin{itemize}
+  \item \textbf{External Service Change}: If external API endpoints or formats change, the \textbf{AbstractAugmenter} might break, requiring quick updates. 
+  \item \textbf{Google Scholar Scraping}: Unofficial approach can fail unpredictably due to captcha or UI changes.
+  \item \textbf{Large Data Processing Time}: If user has \emph{extremely large} input sets and classification is CPU-heavy, runs could be slow. 
+  \item \textbf{Classifier Accuracy}: If the classification module is not well-trained, it might incorrectly exclude relevant references.
+\end{itemize}
+
+\subsection{Technical Debt Areas}
+\begin{itemize}
+  \item \textbf{No Universal Bulk Query}: We currently do multiple single queries. Bulk or batched queries are not standardized across all external services, representing a potential optimization area.
+  \item \textbf{Duplicate Checking Logic}: We may need a robust approach for merging duplicates or near-duplicates across multiple input `.bib` files. This is not thoroughly addressed in the core design yet.
+  \item \textbf{Multi-Language Support}: If references are in non-English languages, the lexicon-based or classification approach may degrade. The architecture doesn’t fully address multilingual support.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Appendices}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Detailed Diagrams or References}
+\textbf{Detailed UML-like diagrams} (class diagrams, sequence diagrams) will be provided in the \emph{SDS (Software Design Specification)} to maintain separation between architecture-level and implementation-level details. 
+
+\subsection{Glossary}
+(See also SRS for domain definitions.)
+
+\begin{description}[style=nextline]
+  \item[Scraper Plugin] A module implementing a standard interface for retrieving data from a specific external source.
+  \item[Classifier Plugin] A module that provides advanced ML-based text classification to refine references beyond lexicon matching.
+  \item[Reference Object] An in-memory representation of a single bibliographic record, with fields such as title, abstract, authors, etc.
+  \item[Data Pipeline] The sequential series of transformations from raw `.bib` input to curated `.bib` output.
+\end{description}
+
+\subsection{References to Related Documents}
+\begin{itemize}
+  \item \textbf{SRS (Software Requirements Specification)} for the comprehensive list of functional and non-functional requirements.
+  \item \textbf{SDS (Software Design Specification)} for the detailed module design, data structures, class diagrams, and code-level details.
+\end{itemize}
+
+\end{document}

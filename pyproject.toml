@@ -1,0 +1,14 @@
+[tool.poetry]
+name = "winnow"
+version = "0.1.0"
+description = "A Python-based pipeline for sifting relevant bibliographic references."
+authors = ["Ayan Das <bvits@riseup.net>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

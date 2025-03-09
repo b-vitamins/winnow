@@ -1,0 +1,622 @@
+\documentclass[12pt]{article}
+\usepackage{titling}
+\usepackage{lipsum}     % For dummy text (if needed)
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\title{Winnow: Software requirements specification}
+\author{Ayan Das}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Purpose of this Document}
+The purpose of this Software Requirements Specification (SRS) is to provide a comprehensive description of the requirements, scope, constraints, and functionality for a \emph{Python-based project} that aggregates large collections of bibliographic records from various sources (journals, conferences) and systematically filters them based on content relevance. This document follows a structure inspired by IEEE 29148 (which superseded IEEE 830) standards for software requirements. 
+
+The system's main goal is:
+\begin{itemize}
+  \item To parse large volumes of BibTeX data scattered across multiple directories.
+  \item To augment these records with missing abstracts from a variety of external services.
+  \item To \emph{reliably and thoroughly filter} references that lie at the intersection of \emph{Physics} (especially \emph{statistical physics}) and \emph{Machine Learning (ML)}.
+  \item To produce a \emph{single curated BibTeX file} that can be used by researchers with minimal misses (i.e., minimal false negatives).
+  \item To do all of the above in a \emph{production-grade} codebase with robust logging, error handling, progress tracking, and a well-defined plugin-like interface for custom scrapers.
+\end{itemize}
+
+This document serves multiple audiences, including the project’s developers, testers, prospective maintainers, external integrators, and stakeholders (e.g., research labs, libraries) who need to understand the system’s capabilities and constraints.
+
+\subsection{Scope}
+The scope of this project includes:
+\begin{enumerate}[label=\alph*)]
+  \item Parsing BibTeX entries stored in a large directory structure, where each directory corresponds to a venue (journal or conference) and each file corresponds to a specific year.
+  \item Validating and normalizing the input data, applying a set of invariants to ensure consistent structure.
+  \item Augmenting missing abstracts using multiple external APIs/services (e.g., Semantic Scholar, OpenAlex, arXiv, Google Scholar, etc.), with fallback priority ordering.
+  \item Applying a \emph{broad} textual filtering strategy based on two conceptual lexicons: a physics lexicon and a machine-learning lexicon. 
+  \item Optionally applying advanced text classification to further refine the set of relevant references.
+  \item Providing a \emph{unified interface} (i.e., plugin-like extension points) for specialized scrapers that can be integrated without major modifications to the rest of the pipeline.
+  \item Managing extensive logging, error-handling, progress tracking, and usage analytics in a production environment.
+\end{enumerate}
+
+The system is primarily intended for \emph{researchers working at the intersection of physics and machine learning}, but the overall design and code structure will be general enough that it can be repurposed to other domains (e.g., \emph{biology and ML}, \emph{finance and ML}, or any domain intersection). We will implement \emph{configurable lexicons} and \emph{pluggable scrapers} so that the pipeline can be adapted with minimal code changes.
+
+\subsection{Definitions, Acronyms, and Abbreviations}
+\begin{description}[style=nextline]
+  \item[BibTeX] A reference management tool and file format used for describing and listing bibliographic items. 
+  \item[ML] Machine Learning.
+  \item[Abstract Augmentation] The process of retrieving missing abstracts for references from external services.
+  \item[Lexicon] A set of domain-specific keywords or key phrases used for textual filtering.
+  \item[API] Application Programming Interface.
+  \item[Pipeline] A connected series of processing steps or modules forming a workflow.
+  \item[Filtering Intersection] The method of ensuring that references simultaneously mention relevant keywords from \emph{both} physics and ML, or that are determined relevant via advanced text classification.
+  \item[SRS] Software Requirements Specification.
+  \item[SAS] Software Architecture Specification.
+  \item[SDS] Software Design Specification.
+  \item[IEEE 29148] International standard providing guidance for SRS documents.
+\end{description}
+
+\subsection{References}
+\begin{itemize}
+  \item IEEE 29148 (superseding IEEE 830): \emph{Systems and software engineering – Life cycle processes – Requirements engineering}.
+  \item ISO/IEC/IEEE 42010: \emph{Systems and software engineering – Architecture description}.
+  \item Additional references may include official documentation for:
+  \begin{itemize}
+    \item \textbf{Semantic Scholar API} - \url{https://api.semanticscholar.org/}
+    \item \textbf{OpenAlex API} - \url{https://docs.openalex.org/}
+    \item \textbf{arXiv API} - \url{https://arxiv.org/help/api/index}
+    \item \textbf{Google Scholar} (no official public API, often requires HTML parsing or third-party libraries).
+  \end{itemize}
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Overall Description}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Product/Project Background}
+Many researchers need a \emph{comprehensive} yet \emph{focused} reference dataset for cross-disciplinary work. In fields like \emph{statistical physics} and \emph{machine learning}, references are \emph{voluminous} and \emph{highly fragmented} across different journals and conferences. Most existing solutions either:
+\begin{enumerate}
+  \item Provide general reference management but lack advanced domain-based filtering or abstract retrieval.
+  \item Are domain-specific solutions that do not scale or adapt well to new domains.
+\end{enumerate}
+
+Therefore, this project addresses the \emph{specialized need} of reliably obtaining \emph{all relevant references in a chosen domain intersection} while ensuring minimal false negatives and providing a flexible, maintainable codebase.
+
+\subsection{User and Stakeholder Descriptions}
+\begin{itemize}
+  \item \textbf{Primary Users (End-User Researchers)}: 
+  Researchers and graduate students working at the \emph{intersection of physics and ML}. They expect to:
+  \begin{itemize}
+    \item Provide a large corpus of `.bib` files.
+    \item Configure the pipeline (e.g., specify their domain intersection, external services).
+    \item Receive a curated `.bib` file of relevant references with \emph{augmented abstracts}.
+  \end{itemize}
+
+  \item \textbf{Domain Librarians or Reference Managers}:
+  Librarians at research institutions who manage domain-specific bibliographies and want to unify them. They might also create specialized scrapers for \emph{high-impact journals}.
+
+  \item \textbf{System Administrators / DevOps}:
+  Responsible for deploying and maintaining the system in a \emph{production environment}. They care about logging, error handling, resource utilization, and system integration.
+
+  \item \textbf{Software Developers / Plugin Implementers}:
+  Developers who extend the pipeline with \emph{additional scraper plugins} for specialized or newly emerging journals. They require a robust \emph{API interface} or plugin template to do so \emph{without rewriting the entire system}.
+
+\end{itemize}
+
+\subsection{System Context}
+The system is a \emph{command-line or library-based tool} that can be run on a local workstation or in a server environment. It may be integrated with:
+\begin{itemize}
+  \item \textbf{File System}: The directories containing `.bib` files.
+  \item \textbf{Internet / External APIs}: For abstract retrieval. 
+  \item \textbf{Configuration Files or CLI Arguments}: Where the user can specify domain lexicons, concurrency level, logging details, etc.
+\end{itemize}
+
+Users might also run it in an automated pipeline with \textbf{continuous integration} or \textbf{scheduled tasks} to keep their curated references up to date. 
+
+\subsection{Constraints and Assumptions (High-Level)}
+\begin{itemize}
+  \item \textbf{Large Data Volume}: The system must handle tens or hundreds of thousands of references efficiently.
+  \item \textbf{Incomplete Data}: Many references \emph{lack} abstracts, titles may have LaTeX formatting, and years/venues might be mis-specified. The system must robustly handle or log anomalies.
+  \item \textbf{External API Reliability}: Abstract retrieval services might be slow, rate-limited, or fail intermittently. Our system must \emph{gracefully degrade} or \emph{re-try} as appropriate, logging errors clearly.
+  \item \textbf{Python 3.x Environment}: We assume the tool is written in Python 3.x. 
+  \item \textbf{Minimal Misses}: The system should emphasize \emph{inclusive} first-pass filtering, then refine with text classification to reduce false positives.
+\end{itemize}
+
+\subsection{General Dependencies}
+\begin{itemize}
+  \item \textbf{BibTeX Parsing Libraries} (e.g., \texttt{bibtexparser} or \texttt{pybtex}) for reading/writing `.bib` files.
+  \item \textbf{HTTP Libraries} (e.g., \texttt{requests}) for external API calls.
+  \item \textbf{Database or Key-Value Store} (optional) for caching results from external queries.
+  \item \textbf{Logging Frameworks} (e.g., Python \texttt{logging} + structured logs).
+  \item \textbf{Natural Language Processing Libraries} (e.g., \texttt{nltk}, \texttt{spaCy}, or \texttt{scikit-learn}) if advanced text classification is used.
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Functional Requirements}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+This section outlines the \emph{functional requirements} that the system must fulfill, typically described as user stories or use cases.
+
+\subsection{Use Cases / User Stories}
+
+\subsubsection{Use Case 1: Parsing and Validating BibTeX}
+\begin{itemize}
+  \item \textbf{Actors:} Researcher, Librarian
+  \item \textbf{Description:} The user provides a directory structure containing multiple `.bib` files. The system scans the directories, \emph{reads and parses each file}, and creates an internal representation (e.g., Python objects) of each reference.
+  \item \textbf{Goal:} Correctly load and validate each reference, capturing fields like \texttt{title}, \texttt{author}, \texttt{year}, \texttt{venue}, \texttt{abstract} (if present), and the \emph{raw} BibTeX entry for output later.
+  \item \textbf{Preconditions:} 
+    \begin{itemize}
+      \item The user has the `.bib` files in a structured directory layout.
+      \item The system is configured with the correct path or base directory.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item Each reference is loaded into an internal data structure.
+      \item Validation logs are generated for missing fields or structural anomalies.
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item If a `.bib` file is corrupt or unreadable, the system logs an error and continues with the rest.
+      \item If critical fields are missing (e.g., \texttt{title}), the reference is flagged or partially omitted.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Use Case 2: Abstract Augmentation}
+\begin{itemize}
+  \item \textbf{Actors:} Researcher, Librarian, Third-Party Services
+  \item \textbf{Description:} The user wants the system to \emph{enrich references that have missing abstracts}. The system calls one or more external APIs (Semantic Scholar, OpenAlex, arXiv, Google Scholar, etc.) in a prioritized sequence. If one fails or returns incomplete data, it tries the next. 
+  \item \textbf{Goal:} Maximize the number of references that end up with an \emph{abstract} field.
+  \item \textbf{Preconditions:} 
+    \begin{itemize}
+      \item The system has network connectivity and valid credentials (if needed) for the external APIs.
+      \item The references have \texttt{title} or some other identifying metadata that can be used to query external services.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item A large portion of references without an abstract are augmented with newly retrieved abstracts.
+      \item A fallback log is created detailing how many references were successfully enriched, from which service, how many failed, etc.
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item Service rate limits or unavailability: The system logs an error, retries after a backoff, or moves on to the next service.
+      \item Invalid or partial matches: The system might retrieve the \emph{wrong} abstract. Therefore, there must be logic to verify that the matched reference is likely correct (e.g., compare title similarity).
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Use Case 3: Keyword-Based Filtering}
+\begin{itemize}
+  \item \textbf{Actors:} Researcher, Librarian
+  \item \textbf{Description:} The system uses two broad \emph{lexicons} (physics and ML) to filter references in a first pass. It checks whether each reference’s title/abstract \emph{intersect} the lexicons (i.e., it must contain at least one physics term and at least one ML term).
+  \item \textbf{Goal:} Quickly eliminate references that are obviously not relevant to the intersection domain. 
+  \item \textbf{Preconditions:} 
+    \begin{itemize}
+      \item A curated or user-configurable physics lexicon is available (with synonyms, partial matches, wildcard expansions).
+      \item A curated or user-configurable ML lexicon is available.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item Each reference is flagged as \emph{candidate} or \emph{non-candidate}.
+      \item Non-candidate references are excluded from further advanced processing (except for auditing or sampling).
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item If an abstract is unavailable, only the title is used, which may lead to false negatives. The system logs the limitation.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Use Case 4: Advanced Text Classification (Optional)}
+\begin{itemize}
+  \item \textbf{Actors:} Developer, Researcher
+  \item \textbf{Description:} A module that can train or load a text classifier (e.g., scikit-learn, spaCy, or a large language model) to refine the candidate set from the first pass, removing false positives. 
+  \item \textbf{Goal:} Further filter references to ensure high precision \emph{without} sacrificing recall (minimizing misses).
+  \item \textbf{Preconditions:}
+    \begin{itemize}
+      \item A labeled dataset or a small set of \emph{true positive} and \emph{true negative} examples is available to train or calibrate the classifier.
+      \item The user has selected or configured a classification approach in the system’s configuration.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item The system outputs a final \emph{refined} list of references, with fewer irrelevant ones.
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item Missing or low-quality training data leading to poor classification performance. Must log model performance metrics.
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Use Case 5: Custom Scraper Plugins}
+\begin{itemize}
+  \item \textbf{Actors:} Plugin Developer, System Administrator
+  \item \textbf{Description:} A developer wants to implement a \emph{specialized abstract scraper} for a certain high-impact journal or a subscription-only database. The system provides an interface or base class that the developer can implement. 
+  \item \textbf{Goal:} Streamline integration of new scrapers with minimal overhead, ensuring data transformation and error logging are consistent with the pipeline.
+  \item \textbf{Preconditions:}
+    \begin{itemize}
+      \item The developer has relevant credentials or access tokens for the target journal API or webpage.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item The new scraper seamlessly fits into the augmentation stage for references that match the relevant domain.
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item The specialized journal’s API is undocumented or changes. This should be logged and flagged during integration tests.
+    \end{itemize}
+\end{itemize}
+
+
+\subsubsection{Use Case 6: Final Merging and Export}
+\begin{itemize}
+  \item \textbf{Actors:} Researcher, Librarian
+  \item \textbf{Description:} The pipeline merges \emph{all surviving references} (i.e., those not excluded) back into a single `.bib` file or a set of `.bib` files. 
+  \item \textbf{Goal:} Present a unified, curated bibliography that has minimal misses and includes any newly added or corrected abstracts.
+  \item \textbf{Preconditions:}
+    \begin{itemize}
+      \item All earlier stages (parsing, augmentation, filtering) have completed.
+    \end{itemize}
+  \item \textbf{Postconditions:}
+    \begin{itemize}
+      \item A final file (or set of files) in valid BibTeX format is written to the user-specified output path.
+      \item The user can directly import or cite from this curated file in their \LaTeX\, or reference manager.
+    \end{itemize}
+  \item \textbf{Exceptions:}
+    \begin{itemize}
+      \item Permission issues or disk space issues during the write operation. The system logs these errors and may fallback to partial export.
+    \end{itemize}
+\end{itemize}
+
+
+\newpage
+
+\subsection{Detailed Functional Requirements}
+
+\subsubsection{FR-1: Directory-Based Discovery}
+\begin{itemize}
+  \item \textbf{Description:} The system must recursively search through a user-specified root directory to find `.bib` files.
+  \item \textbf{Rationale:} Large reference collections are structured by \{venue\}/\{year\}. 
+  \item \textbf{Criteria:} Must handle nested directories. Must skip non-BibTeX files or directories lacking `.bib`.
+\end{itemize}
+
+\subsubsection{FR-2: Configurable Invariant Checks}
+\begin{itemize}
+  \item \textbf{Description:} The system shall enforce certain \emph{invariants} (e.g., every entry must have a \texttt{title} field, certain fields cannot be empty, etc.).
+  \item \textbf{Rationale:} Ensuring partial data is recognized early. 
+  \item \textbf{Criteria:} The user can enable or disable specific invariants in a config file. Violations generate structured warnings or errors.
+\end{itemize}
+
+\subsubsection{FR-3: Abstract Retrieval with Multiple Services}
+\begin{itemize}
+  \item \textbf{Description:} The system must attempt to retrieve abstracts from multiple sources in a priority order (Semantic Scholar, OpenAlex, arXiv, Google Scholar, etc.). 
+  \item \textbf{Rationale:} Minimizing the chance of an empty abstract. 
+  \item \textbf{Criteria:} Each external service is tried in turn; if successful, the system stops calling further services for that reference. Must log how many calls succeeded or failed per service.
+\end{itemize}
+
+\subsubsection{FR-4: Textual Filtering (Lexicon Intersection)}
+\begin{itemize}
+  \item \textbf{Description:} The system must parse the \emph{combined text} of \texttt{title + abstract} (when available) for each reference, scanning for presence of at least one \emph{physics term} and at least one \emph{ML term}.
+  \item \textbf{Rationale:} Quick broad pass to reduce the dataset size. 
+  \item \textbf{Criteria:} 
+  \begin{itemize}
+    \item Must support case-insensitive matching.
+    \item Must support wildcards or partial matches for morphological variants.
+    \item Must allow a user to \emph{edit} or \emph{extend} the lexicon files easily.
+  \end{itemize}
+\end{itemize}
+
+\subsubsection{FR-5: Advanced Classification (Optional Module)}
+\begin{itemize}
+  \item \textbf{Description:} The system can optionally load or train a classification model to refine the candidate set from FR-4. 
+  \item \textbf{Rationale:} Reduce false positives, preserve high recall. 
+  \item \textbf{Criteria:} The classification module should run \emph{after} the broad intersection filter. It must produce a confidence score for each reference. The user can specify a threshold for acceptance or rejection.
+\end{itemize}
+
+\subsubsection{FR-6: Custom Scraper Interface}
+\begin{itemize}
+  \item \textbf{Description:} Provide an interface or base class that can be extended by new scrapers. 
+  \item \textbf{Rationale:} Users or devs might want to add specialized scrapers (e.g., for \emph{Nature Physics} or \emph{Physical Review E} where a custom approach might exist).
+  \item \textbf{Criteria:}
+  \begin{itemize}
+    \item The interface must define standard methods like \verb|get_abstract(title, authors, doi)| or a similar signature.
+    \item Return types, logging approach, and error handling must be consistent with the rest of the pipeline.
+  \end{itemize}
+\end{itemize}
+
+\subsubsection{FR-7: Logging, Error Handling, and Reporting}
+\begin{itemize}
+  \item \textbf{Description:} The system must produce \emph{structured logs} containing:
+  \begin{itemize}
+    \item Timestamps
+    \item Event severity (INFO, WARNING, ERROR, CRITICAL)
+    \item Stage of the pipeline
+    \item Possibly the ID of the reference in question
+  \end{itemize}
+  \item \textbf{Rationale:} For debugging and auditing.
+  \item \textbf{Criteria:} Must gracefully handle partial failures (e.g., a single reference fails augmentation) without stopping the entire pipeline. 
+\end{itemize}
+
+\subsubsection{FR-8: Final BibTeX Generation}
+\begin{itemize}
+  \item \textbf{Description:} The system must produce a single or multiple `.bib` file(s) containing the filtered references with any newly added or updated abstract fields. 
+  \item \textbf{Rationale:} To allow the user immediate usage in their reference manager or \LaTeX. 
+  \item \textbf{Criteria:}
+    \begin{itemize}
+      \item The resulting `.bib` must preserve standard BibTeX formatting.
+      \item The user can specify output location or a naming convention (e.g. \verb|ml_physics_all.bib|).
+      \item The pipeline should also preserve the original BibTeX keys or generate new ones only when necessary.
+    \end{itemize}
+\end{itemize}
+
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Non-Functional Requirements}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Performance Requirements}
+\begin{itemize}
+  \item \textbf{NF-PERF-1: Scalability} \\
+  The system must handle thousands to potentially hundreds of thousands of references in a \emph{single run} without timing out or consuming excessive memory. 
+  \item \textbf{NF-PERF-2: Concurrency} \\
+  Abstract augmentation calls to external APIs can be \emph{parallelized} or \emph{asynchronous} to speed up the overall runtime.
+  \item \textbf{NF-PERF-3: Efficiency} \\
+  The text filtering operation (searching for lexicon terms) should be efficient, ideally using compiled regex or other optimized string search algorithms. 
+\end{itemize}
+
+\subsection{Security Requirements}
+\begin{itemize}
+  \item \textbf{NF-SEC-1: API Credentials} \\
+  If API keys or credentials are required for external services, they must not be exposed in logs or version control. They must be stored securely (e.g., environment variables or config files with appropriate permissions).
+  \item \textbf{NF-SEC-2: Sanitization} \\
+  When dealing with user-provided data (like manually added references or special plugin configurations), the system must sanitize inputs to avoid injection vulnerabilities (particularly if user data is appended to a shell command or similar).
+\end{itemize}
+
+\subsection{Usability Requirements}
+\begin{itemize}
+  \item \textbf{NF-USAB-1: CLI / Configuration Simplicity} \\
+  The system should expose an easy command-line interface with descriptive help text. Command-line arguments or a single config file can be used to control the pipeline steps.
+  \item \textbf{NF-USAB-2: Documentation} \\
+  Clear documentation (online or embedded docstrings) describing each configuration option, how to extend the system, etc.
+\end{itemize}
+
+\subsection{Maintainability \& Reliability Requirements}
+\begin{itemize}
+  \item \textbf{NF-MR-1: Modular Code Structure} \\
+  Each stage (parsing, augmentation, filtering, classification, exporting) should be in a separate Python module or set of modules for clarity and maintainability.
+  \item \textbf{NF-MR-2: Automated Testing} \\
+  Comprehensive unit and integration tests, ensuring that updates or new plugins do not break existing functionality.
+  \item \textbf{NF-MR-3: Graceful Degradation} \\
+  If one external service is unavailable or fails, the system should log and move to the next service (for abstract augmentation), rather than terminate the pipeline.
+\end{itemize}
+
+\subsection{Reliability Requirements}
+\begin{itemize}
+  \item \textbf{NF-REL-1: Recovery from Partial Failures} \\
+  If an external API fails mid-run, the system should still complete partial augmentation for other references. A dedicated \emph{re-run} mode might be provided to retry failed references.
+\end{itemize}
+
+\subsection{Extensibility Requirements}
+\begin{itemize}
+  \item \textbf{NF-EXT-1: Domain Lexicon Customization} \\
+  Users can easily replace the physics or ML lexicons with their own domain terms. 
+  \item \textbf{NF-EXT-2: Plugin Mechanism for Scrapers} \\
+  The system includes guidelines and base classes for implementing new scrapers. 
+\end{itemize}
+
+\subsection{Internationalization}
+Not a major concern unless the user sets or provides references in multiple languages. The architecture should not inherently prohibit multi-language references, but it is not a primary focus here.
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{System Interface Requirements}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{User Interface (CLI or Library)}
+\begin{itemize}
+  \item The system will have a \textbf{Command-Line Interface (CLI)}. Example usage:
+  \begin{verbatim}
+    python aggregator.py --root_dir path/to/bib/files \
+                         --config path/to/config.yaml \
+                         --output curated.bib \
+                         --enable-classifier
+  \end{verbatim}
+  \item Alternatively, a library approach can provide Python functions such as:
+  \begin{verbatim}
+    from aggregator import run_pipeline
+
+    run_pipeline(
+      root_dir="path/to/bib/files",
+      output_file="curated.bib",
+      config="path/to/config.yaml",
+      ...
+    )
+  \end{verbatim}
+\end{itemize}
+
+\subsection{External API Interfaces}
+\begin{itemize}
+  \item \textbf{Semantic Scholar API:} 
+  \begin{itemize}
+    \item Endpoint: \url{https://api.semanticscholar.org/v1/paper/}
+    \item Rate Limits: \emph{TBD, often free tier is 100 requests per 5 minutes or similar.}
+    \item Required Field: \emph{Title} or \emph{DOI} or \emph{arXiv ID}.
+  \end{itemize}
+  \item \textbf{OpenAlex API:}
+  \begin{itemize}
+    \item Endpoint: \url{https://api.openalex.org/works}
+    \item Format: JSON response. 
+    \item Query fields: Title, authors, etc. 
+  \end{itemize}
+  \item \textbf{arXiv API:} 
+  \begin{itemize}
+    \item Endpoint: \url{http://export.arxiv.org/api/query}
+    \item Commonly uses search by \emph{title} or \emph{author} or \emph{arXiv ID}.
+  \end{itemize}
+  \item \textbf{Google Scholar:}
+  \begin{itemize}
+    \item No official public API. Often requires HTML scraping with potential for \emph{captcha} or blocking. 
+    \item \emph{We must approach with caution and user disclaimers.}
+  \end{itemize}
+\end{itemize}
+
+\subsection{Internal Plugin Interface}
+\begin{itemize}
+  \item The system will expose a base Python class, e.g.:
+  \begin{verbatim}
+    class AbstractScraper:
+        def __init__(self, config):
+            ...
+        def fetch_abstract(self, ref) -> Optional[str]:
+            ...
+  \end{verbatim}
+  \item Developers can subclass and implement \verb|fetch_abstract()| to integrate with a specialized service.
+  \item The pipeline automatically calls each registered scraper in a chain or fallback order.
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Data Requirements}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{BibTeX Input Format}
+\begin{itemize}
+  \item The input is primarily `.bib` files. 
+  \item The pipeline must handle \emph{BibTeX entries of type} \texttt{@article}, \texttt{@inproceedings}, \texttt{@book}, etc.
+  \item Minimal fields to read: \texttt{title}, \texttt{author}, \texttt{year}, \texttt{abstract (optional)}, \texttt{doi (optional)}, \texttt{url (optional)}, and the \emph{complete raw entry text}.
+\end{itemize}
+
+\subsection{Augmented Data / Metadata}
+\begin{itemize}
+  \item \textbf{Abstract Field:} If missing, must be appended or updated after augmentation. 
+  \item \textbf{Confidence Scores:} If classification is enabled, a \emph{confidence or probability} might be stored in an auxiliary field. 
+  \item \textbf{Lexicon Terms Matched:} Optionally, the system can store which physics or ML terms triggered the candidate flag, for auditing.
+\end{itemize}
+
+\subsection{Output Format}
+\begin{itemize}
+  \item A single unified `.bib` file that merges all references, rewriting or adding \texttt{abstract} fields, if found. 
+  \item The user can specify whether to overwrite or append to existing `.bib`. 
+\end{itemize}
+
+\subsection{Archival or Backup Requirements}
+\begin{itemize}
+  \item System logs and partial results (e.g., an intermediate CSV of references with newly found abstracts) may be stored for reference. 
+  \item A stable \emph{cache} (e.g., a local database or JSON files) of retrieved abstracts might be used to avoid re-querying external APIs. 
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Constraints and Assumptions}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Technical Constraints}
+\begin{itemize}
+  \item \textbf{Python Version}: The code is targeted for Python 3.8+.
+  \item \textbf{External Dependencies}: For advanced text classification, the system might rely on \texttt{scikit-learn} or \texttt{spaCy}, which must be installed. 
+  \item \textbf{Command-Line Environment}: The typical usage is from a UNIX-like shell or from within an IDE that can run command-line scripts.
+\end{itemize}
+
+\subsection{Organizational Constraints}
+\begin{itemize}
+  \item The system is developed and maintained by a small team; the code should be well-organized to facilitate easy onboarding.
+  \item Licensing constraints for external libraries and APIs must be respected (e.g., usage limits, attribution requirements).
+\end{itemize}
+
+\subsection{Assumptions}
+\begin{itemize}
+  \item The user has legitimate access to the external services for abstract retrieval.
+  \item The user’s local machine or server has enough disk space to store logs and any caches of abstracts.
+  \item The references are primarily in English or contain English titles/abstracts. Non-English references might be partially processed, but text classification might degrade in accuracy.
+\end{itemize}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Acceptance Criteria / Validation}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Criteria}
+Each major functional requirement (FR-1 through FR-8) has a set of acceptance criteria that must be validated. Examples:
+
+\begin{itemize}
+  \item \textbf{AC-1 (Parsing)}: 
+  \begin{itemize}
+    \item Provide a known set of `.bib` files with 500 references total. The system should parse them all and generate logs. 
+    \item The system must not crash on any valid `.bib` file. 
+    \item The number of references parsed must match the expected count.
+  \end{itemize}
+
+  \item \textbf{AC-2 (Augmentation)}: 
+  \begin{itemize}
+    \item Provide 100 references missing abstracts, with known DOIs. The system must retrieve an abstract for at least 80\% of them (assuming the external APIs have the data).
+    \item The system must produce an \emph{enrichment report} showing success/failure for each external API call.
+  \end{itemize}
+
+  \item \textbf{AC-3 (Filtering)}: 
+  \begin{itemize}
+    \item Provide a test dataset with a known distribution of physics+ML intersection papers. The system must identify at least 95\% of them as \emph{candidates} in the first pass.
+    \item The system must \emph{exclude} references that do not match the intersection (or keep them \emph{only} for logging/auditing).
+  \end{itemize}
+
+  \item \textbf{AC-4 (Classification)}:
+  \begin{itemize}
+    \item If classification is enabled, test with 50 \emph{true positives} and 50 \emph{true negatives}. The system must achieve a \emph{precision} of at least 90\% at a threshold that yields \emph{recall} of at least 90\%.
+  \end{itemize}
+
+  \item \textbf{AC-5 (Final Output)}:
+  \begin{itemize}
+    \item The generated final `.bib` file must be valid BibTeX (linted by a standard tool).
+    \item Newly added \texttt{abstract} fields must appear in the final file.
+    \item The user can confirm the presence of certain known references in the curated file.
+  \end{itemize}
+\end{itemize}
+
+\subsection{Sign-off Process}
+\begin{enumerate}
+  \item \textbf{Requirement Traceability}: Each test scenario references the FR or NFR it addresses. 
+  \item \textbf{Stakeholder Review}: The final acceptance testing is reviewed by at least one domain expert (e.g., a physics+ML researcher) who checks that the coverage is correct and that relevant references indeed appear in the final curated file.
+  \item \textbf{Final Approval}: Once the acceptance criteria are met or exceed the minimum thresholds, the system is considered ready for release.
+\end{enumerate}
+
+\newpage
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Appendices}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Glossary}
+\begin{description}[style=nextline]
+  \item[Abstract Augmentation] The process of adding or updating the \texttt{abstract} field in a BibTeX entry by querying external services.
+  \item[Lexicon Intersection] Filtering method requiring at least one physics keyword \emph{and} one ML keyword in the reference’s textual fields.
+  \item[Plugin / Scraper] A software component that implements a standard interface to retrieve data from a specialized source.
+  \item[Reference] A single bibliographic item in the system’s internal representation or final `.bib` file.
+\end{description}
+
+\subsection{Change History}
+\begin{tabular}{|l|l|p{7cm}|}
+\hline
+\textbf{Date} & \textbf{Version} & \textbf{Change}\\
+\hline
+2025-03-09 & 0.1 & Initial draft of the SRS. \\
+\hline
+\end{tabular}
+
+\subsection{References to Supporting Documentation}
+\begin{itemize}
+  \item A separate \emph{Software Architecture Specification (SAS)} document that will detail the architecture-level decisions and diagrams.
+  \item A \emph{Software Design Specification (SDS)} that will describe each module, data structures, and class-level details.
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,760 @@
+\documentclass[12pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\lstset{basicstyle=\footnotesize\ttfamily,breaklines=true}
+
+\title{Winnow: Software design specification}
+\author{Ayan Das}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Introduction}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Purpose and Scope}
+This \textbf{Software Design Specification (SDS)} provides a detailed, \emph{implementation-level} view of the system architecture described in the \emph{Software Architecture Specification (SAS)}. While the SAS covered high-level modules, concurrency, and interfaces, this SDS focuses on:
+
+\begin{itemize}
+  \item The \emph{internal structure and design} of each module (with classes, functions, data flows).
+  \item \emph{Key algorithms} for abstract augmentation, filtering, and text classification.
+  \item \emph{Detailed data models} and method signatures.
+  \item The \emph{error-handling, logging, testing,} and \emph{implementation plan}.
+\end{itemize}
+
+\subsection{Relationship to Other Documents}
+\begin{itemize}
+  \item \textbf{SRS (Software Requirements Specification):} Defines the functional and non-functional requirements.
+  \item \textbf{SAS (Software Architecture Specification):} Outlines the high-level structure, modules, concurrency, and data flow. 
+  \item \textbf{This SDS:} Provides a thorough \emph{software-level design}, bridging the conceptual architecture and the actual Python code.
+\end{itemize}
+
+\subsection{Document Conventions}
+\begin{itemize}
+  \item This SDS uses \texttt{typewriter font} to denote code or function signatures.
+  \item Pseudo-UML diagrams are textual for illustrative purposes.
+  \item Some code snippets are given in Python-like pseudocode to show design-level details.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Detailed Design Objectives}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Mapping to Requirements}
+The main objectives trace to both functional and non-functional requirements in the SRS:
+
+\begin{itemize}[leftmargin=2cm]
+\item[FR-1:] Parse \& Validate BibTeX files from directories.
+\item[FR-2:] Apply configurable invariants.
+\item[FR-3:] Augment missing abstracts from external services.
+\item[FR-4:] Filter references based on domain lexicons (Physics \& ML).
+\item[FR-5:] (Optional) Use advanced text classification to refine the candidate set.
+\item[FR-6:] Provide a plugin interface for specialized scrapers.
+\item[FR-7:] Robust logging, error handling.
+\item[FR-8:] Export final references to curated `.bib` files.
+\end{itemize}
+
+Non-functional goals such as \textbf{scalability}, \textbf{maintainability}, \textbf{performance}, and \textbf{extensibility} guide the design approach, ensuring that each module has clearly delimited responsibilities and a well-defined interface.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{System/Module Decomposition}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+Following the \emph{Logical View} from the SAS, we implement a \textbf{pipeline of modules}:
+
+\begin{enumerate}[label=\Roman*.]
+  \item \textbf{Module: InputParser}
+  \item \textbf{Module: AbstractAugmenter}
+  \item \textbf{Module: FilterEngine}
+  \item \textbf{Module: Exporter}
+  \item \textbf{Module: Plugin Infrastructure (Scrapers, Classifiers)}
+  \item \textbf{Module: Shared / Utilities (Configuration, Logging, Exceptions)}
+\end{enumerate}
+
+Below, each module is broken down into subcomponents/classes, responsibilities, and key methods.
+
+\subsection{Module \texttt{InputParser}}
+\textbf{Responsibilities:}
+\begin{itemize}
+  \item Recursively discover `.bib` files under a given directory.
+  \item Parse each `.bib` entry into an in-memory \texttt{Reference} object.
+  \item Apply basic data invariants (e.g., no empty \texttt{title}).
+  \item Yield or return a list of \texttt{Reference} objects for further processing.
+\end{itemize}
+
+\textbf{Classes/Functions Overview:}
+
+\begin{description}
+  \item[\texttt{Reference} (Data Class)] 
+  \begin{itemize}
+    \item Fields: \texttt{bibtex\_key}, \texttt{title}, \texttt{authors}, \texttt{year}, \texttt{abstract}, \texttt{venue}, \texttt{doi}, \texttt{url}, \texttt{raw\_bibtex}.
+    \item \texttt{\_\_init\_\_}(...) constructs a Reference from given fields.
+  \end{itemize}
+  
+  \item[\texttt{BibFileParser}] 
+  \begin{itemize}
+    \item \texttt{parse\_file(file\_path: str) -> List[Reference]}: 
+    Uses an external library (e.g., \texttt{bibtexparser}) to parse a single `.bib`.
+  \end{itemize}
+  
+  \item[\texttt{InputParser}] (the main orchestrator)  
+  \begin{itemize}
+    \item \texttt{discover\_bib\_files(root\_dir: str) -> List[str]}: Recursively find `.bib` files.
+    \item \texttt{parse\_references(root\_dir: str, config: Config) -> Iterator[Reference]}: 
+      \begin{itemize}
+        \item For each `.bib` file discovered, parse it into \texttt{Reference} objects.
+        \item Apply invariants (from \texttt{config.invariants}).
+        \item Log or skip references that fail invariants.
+        \item Yield valid references.
+      \end{itemize}
+  \end{itemize}
+\end{description}
+
+
+\subsection{Module \texttt{AbstractAugmenter}}
+\textbf{Responsibilities:}
+\begin{itemize}
+  \item Identify references lacking an \texttt{abstract}.
+  \item Query external services (Semantic Scholar (SS), OpenAlex (OA), arXiv, Google Scholar) in a configurable fallback order.
+  \item Possibly run specialized \texttt{ScraperPlugins} (e.g., for \emph{Nature} or \emph{Physical Review E}).
+  \item Update the \texttt{abstract} field if a match is found. 
+\end{itemize}
+
+\textbf{Classes/Functions Overview:}
+
+\begin{description}
+  \item[\texttt{AbstractScraper} (Base Class)]
+  \begin{itemize}
+    \item \texttt{get\_abstract(ref: Reference) -> Optional[str]} 
+    \begin{itemize}
+      \item Takes a \texttt{Reference} and attempts to fetch an abstract via whichever method the subclass implements.
+      \item Returns \texttt{None} if the scraper cannot find a valid abstract.
+    \end{itemize}
+  \end{itemize}
+
+  \item[\texttt{SSScraper}, \texttt{OAScraper}, \texttt{ArxivScraper}, etc.] 
+  \begin{itemize}
+    \item Implement \texttt{get\_abstract()} for each external service. 
+    \item Typically do an HTTP request with \texttt{requests} or an equivalent library.
+    \item Parse the JSON/XML response, return \texttt{abstract} if found.
+  \end{itemize}
+
+  \item[\texttt{AbstractAugmenter}] 
+  \begin{itemize}
+    \item Fields: 
+    \begin{itemize}
+      \item \texttt{scrapers: List[AbstractScraper]}
+      \item \texttt{config: Config}
+      \item \texttt{cache: dict} (optional) for storing \texttt{(title,abstract)} pairs.
+    \end{itemize}
+
+    \item \texttt{augment(refs: Iterable[Reference]) -> None}: 
+    \begin{itemize}
+      \item Iterates over \texttt{refs}.
+      \item For each ref without an abstract:
+        \begin{enumerate}
+          \item Check local \texttt{cache}.
+          \item If not in cache, loop through the \texttt{scrapers} in order:
+            \begin{itemize}
+              \item \texttt{potential\_abstract = scraper.get\_abstract(ref)}
+              \item If \texttt{potential\_abstract} is not \texttt{None}, set \texttt{ref.abstract} and break.
+            \end{itemize}
+          \item Update the cache accordingly.
+        \end{enumerate}
+    \end{itemize}
+  \end{itemize}
+\end{description}
+
+\subsection{Module \texttt{FilterEngine}}
+\textbf{Responsibilities:}
+\begin{itemize}
+  \item \emph{Lexicon-Based Filtering}: Check if \texttt{(title + abstract)} contains at least one physics term and at least one ML term.
+  \item \emph{(Optional) Classifier-Based Filtering}: Use a trained text classifier to refine the candidate set and reduce false positives.
+  \item Output: A final list of \emph{candidate} references.
+\end{itemize}
+
+\textbf{Classes/Functions Overview:}
+
+\begin{description}
+  \item[\texttt{LexiconFilter}]
+  \begin{itemize}
+    \item \texttt{\_\_init\_\_}(physics\_lexicon: List[str], ml\_lexicon: List[str], config: Config)
+    \item \texttt{matches\_intersection(text: str) -> bool}: 
+    \begin{itemize}
+      \item Implements partial or regex matching for terms in both lexicons. 
+      \item Returns \texttt{True} if \emph{at least one} physics term and \emph{at least one} ML term is found in the string \texttt{text}.
+    \end{itemize}
+  \end{itemize}
+
+  \item[\texttt{ClassifierFilter} (Optional)]
+  \begin{itemize}
+    \item \texttt{\_\_init\_\_}(model: SomeModel, config: Config)
+    \item \texttt{predict\_relevance(text: str) -> float}: 
+      \begin{itemize}
+        \item Returns a probability or confidence of relevance to the \emph{physics+ML} intersection.
+      \end{itemize}
+    \item \texttt{is\_relevant(prob: float) -> bool}: 
+      \begin{itemize}
+        \item Compares the probability to a threshold from \texttt{config.classifier\_threshold}.
+      \end{itemize}
+  \end{itemize}
+
+  \item[\texttt{FilterEngine}]
+  \begin{itemize}
+    \item \texttt{\_\_init\_\_}(lexicon\_filter: LexiconFilter, classifier\_filter: Optional[ClassifierFilter], config: Config)
+    \item \texttt{filter\_refs(refs: Iterable[Reference]) -> List[Reference]}:
+    \begin{itemize}
+      \item For each reference:
+        \begin{enumerate}
+          \item Build \texttt{text = (ref.title + " " + ref.abstract).lower()}.
+          \item \texttt{if lexicon\_filter.matches\_intersection(text) == False: exclude it.} (Stop if not included, or set a \emph{candidate} flag to \texttt{False}.)
+          \item If the classifier is enabled:
+            \begin{enumerate}
+              \item \texttt{prob = classifier\_filter.predict\_relevance(text)}
+              \item If \texttt{classifier\_filter.is\_relevant(prob) == False}, exclude it.
+            \end{enumerate}
+          \item If still included, keep it in the final list.
+        \end{enumerate}
+      \item Return the final candidate list.
+    \end{itemize}
+  \end{itemize}
+\end{description}
+
+\subsection{Module \texttt{Exporter}}
+\textbf{Responsibilities:}
+\begin{itemize}
+  \item Receive the filtered references and write them to a single (or multiple) output `.bib` file(s).
+  \item Optionally include additional fields (like classification confidence, or custom keywords) if desired.
+\end{itemize}
+
+\textbf{Classes/Functions Overview:}
+
+\begin{description}
+  \item[\texttt{BibExporter}]
+  \begin{itemize}
+    \item \texttt{\_\_init\_\_}(config: Config)
+    \item \texttt{export\_bib(refs: List[Reference], output\_path: str) -> None}:
+      \begin{itemize}
+        \item Iterates over \texttt{refs} and reconstructs each entry into a valid BibTeX string (possibly using \texttt{bibtexparser} or \texttt{pybtex}).
+        \item Ensures that newly added \texttt{abstract} fields are included.
+        \item Writes the final `.bib` to disk.
+      \end{itemize}
+  \end{itemize}
+\end{description}
+
+\subsection{Module \texttt{Plugin Infrastructure}}
+\textbf{Responsibilities:}
+\begin{itemize}
+  \item Provide base classes or interfaces for \texttt{ScraperPlugins} and \texttt{ClassifierPlugins}.
+  \item Dynamically load plugins based on user configuration.
+\end{itemize}
+
+\textbf{Classes/Functions Overview:}
+
+\begin{description}
+  \item[\texttt{PluginLoader}]
+  \begin{itemize}
+    \item \texttt{load\_scrapers(plugin\_paths: List[str]) -> List[AbstractScraper]}:
+    \begin{itemize}
+      \item Dynamically import modules from the specified paths, ensure they implement \texttt{AbstractScraper}.
+      \item Return a list of instantiated scraper objects.
+    \end{itemize}
+    \item \texttt{load\_classifier(plugin\_path: str) -> ClassifierFilter}:
+    \begin{itemize}
+      \item Similarly, load a classifier plugin from a Python module path.
+    \end{itemize}
+  \end{itemize}
+\end{description}
+
+\subsection{Module \texttt{Shared / Utilities}}
+\begin{itemize}
+  \item \textbf{Configuration Management:} Parsing YAML/JSON config for lexicon paths, concurrency, API keys, thresholds, etc.
+  \item \textbf{Logging Infrastructure:} Possibly a wrapper around Python’s \texttt{logging} module to produce structured logs (e.g., JSON logs).
+  \item \textbf{Exception Definitions:} E.g., \texttt{AugmentationError}, \texttt{ParsingError}, etc.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Data Design}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Reference Data Structure}
+\begin{verbatim}
+@dataclass
+class Reference:
+    bibtex_key: str
+    title: str
+    authors: str
+    year: str
+    abstract: Optional[str] = None
+    venue: Optional[str] = None
+    doi: Optional[str] = None
+    url: Optional[str] = None
+    raw_bibtex: str = ""   # store the original unmodified entry
+\end{verbatim}
+
+\textbf{Notes:}
+\begin{itemize}
+  \item Some fields may be absent in certain references. 
+  \item \texttt{authors} can be a single string or a list of strings. The \texttt{raw\_bibtex} is kept for output fidelity.
+\end{itemize}
+
+\subsection{Configuration Data Structure}
+Typically loaded from \texttt{config.yaml} or \texttt{config.json}:
+\begin{verbatim}
+@dataclass
+class Config:
+    root_dir: str
+    output_file: str
+    invariants: Dict[str, Any]  # e.g. {"require_title": True, "require_year": False}
+    lexicon_paths: List[str]    # paths to 'physics.txt', 'ml.txt'
+    concurrency: str            # e.g. "thread", "process", or "none"
+    classifier_enabled: bool
+    classifier_threshold: float
+    # etc...
+
+    # External services configuration
+    semantic_scholar_api_key: Optional[str] = None
+    openalex_api_key: Optional[str] = None
+    # ...
+\end{verbatim}
+
+\subsection{Data Flow Within Modules}
+\begin{enumerate}
+  \item \textbf{InputParser} -> yields \texttt{Reference} objects.
+  \item \textbf{AbstractAugmenter} -> modifies \texttt{Reference.abstract} in place if found.
+  \item \textbf{FilterEngine} -> reads the fields, decides keep/exclude. 
+  \item \textbf{Exporter} -> compiles final `.bib` strings from the \texttt{Reference} objects that pass the filter.
+\end{enumerate}
+
+\subsection{Validation and Transformation Logic}
+\begin{itemize}
+  \item \textbf{Invariants Check:} 
+    \begin{itemize}
+      \item \texttt{require\_title}: If \texttt{title} is empty, skip or log an error.
+      \item \texttt{require\_year}: If \texttt{year} is missing, assign \texttt{"unknown"} or skip.
+      \item \texttt{max\_authors\_check}: If \texttt{authors} is extremely large or ill-formatted, log a warning.
+    \end{itemize}
+  \item \textbf{Lexicon Normalization:} 
+    \begin{itemize}
+      \item Lexicon files can contain lines with \texttt{Ising}, \texttt{Spin glass}, etc.
+      \item The \texttt{FilterEngine} loads them into memory (list or set) and may pre-compile them into regex patterns.
+    \end{itemize}
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Interface Design}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Internal Interfaces Between Components}
+
+\begin{enumerate}[label=\arabic*]
+  \item \textbf{InputParser -> AbstractAugmenter:}
+  \begin{verbatim}
+   references = InputParser().parse_references(root_dir, config)
+   AbstractAugmenter(scrapers, config).augment(references)
+  \end{verbatim}
+  The \texttt{references} is a list or iterator of \texttt{Reference} objects.
+
+  \item \textbf{AbstractAugmenter -> FilterEngine:}
+  \begin{verbatim}
+   filtered_refs = FilterEngine(lexicon_filter, classifier_filter, config)
+                   .filter_refs(references)
+  \end{verbatim}
+
+  \item \textbf{FilterEngine -> Exporter:}
+  \begin{verbatim}
+   BibExporter(config).export_bib(filtered_refs, config.output_file)
+  \end{verbatim}
+\end{enumerate}
+
+\subsection{Method Signatures (Detailed)}
+The following are \emph{key} methods in a simplified signature format:
+
+\begin{lstlisting}[language=Python]
+class InputParser:
+    def parse_references(self, root_dir: str, config: Config) -> List[Reference]:
+        """Discover .bib files, parse them, apply invariants, return references."""
+        ...
+
+class AbstractAugmenter:
+    def __init__(self, scrapers: List[AbstractScraper], config: Config):
+        self.scrapers = scrapers
+        self.config = config
+        self.cache = {}
+
+    def augment(self, refs: Iterable[Reference]) -> None:
+        """Iterate over refs, for each missing abstract, call scrapers in sequence, update abstract."""
+
+class LexiconFilter:
+    def __init__(self, physics_lexicon: List[str], ml_lexicon: List[str], config: Config):
+        self.physics_lexicon = physics_lexicon
+        self.ml_lexicon = ml_lexicon
+        self.config = config
+        # Possibly pre-compile regex patterns
+
+    def matches_intersection(self, text: str) -> bool:
+        """Return True if text has >=1 physics term AND >=1 ML term."""
+        ...
+
+class ClassifierFilter:
+    def __init__(self, model_path: str, config: Config):
+        self.model = self.load_model(model_path)
+        self.config = config
+
+    def load_model(self, model_path: str) -> object:
+        """Load a pre-trained model from disk or memory."""
+        ...
+
+    def predict_relevance(self, text: str) -> float:
+        """Return a probability [0.0..1.0]."""
+        ...
+
+    def is_relevant(self, prob: float) -> bool:
+        return prob >= self.config.classifier_threshold
+
+class FilterEngine:
+    def __init__(self, lexicon_filter: LexiconFilter,
+                 classifier_filter: Optional[ClassifierFilter],
+                 config: Config):
+        self.lex_filter = lexicon_filter
+        self.clf_filter = classifier_filter
+        self.config = config
+
+    def filter_refs(self, refs: Iterable[Reference]) -> List[Reference]:
+        """Return a list of references that pass lexicon (and classifier if enabled)."""
+        ...
+
+class BibExporter:
+    def __init__(self, config: Config):
+        self.config = config
+
+    def export_bib(self, refs: List[Reference], output_path: str) -> None:
+        """Write references to .bib file, preserving raw bibtex or updating fields as needed."""
+        ...
+\end{lstlisting}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Behavior and Control Flows}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{High-Level Pipeline Sequence (Activity Diagram)}
+
+\begin{quote}
+\textbf{Step 1: Parse}  
+\hspace*{1em}1.1: \emph{InputParser.parse\_references(root\_dir, config)} \\
+\hspace*{1em}1.2: For each discovered `.bib`, parse entries $\to$ \texttt{Reference} objects. \\
+\hspace*{1em}1.3: Validate each reference, log or skip if invariants fail. \\
+$\downarrow$ \\
+\textbf{Step 2: Augment}  
+\hspace*{1em}2.1: \emph{AbstractAugmenter.augment(references)} \\
+\hspace*{1em}2.2: For each ref without abstract, call scrapers in sequence. \\
+\hspace*{1em}2.3: If a scraper returns an abstract, store it and break. \\
+$\downarrow$ \\
+\textbf{Step 3: Filter}  
+\hspace*{1em}3.1: \emph{FilterEngine.filter\_refs(references)} \\
+\hspace*{1em}3.2: \emph{LexiconFilter.matches\_intersection(text)}: pass/fail. \\
+\hspace*{1em}3.3: If classifier enabled, \emph{ClassifierFilter.predict\_relevance} \& \emph{is\_relevant}. \\
+\hspace*{1em}3.4: Produce final candidate set. \\
+$\downarrow$ \\
+\textbf{Step 4: Export}  
+\hspace*{1em}4.1: \emph{BibExporter.export\_bib(filtered\_refs, config.output\_file)}. \\
+\hspace*{1em}4.2: Generate final `.bib` string, write to disk. \\
+\end{quote}
+
+\subsection{Key Algorithms}
+
+\subsubsection{Lexicon Intersection Algorithm}
+\begin{enumerate}
+  \item Convert \texttt{(title + abstract)} to lowercase \texttt{text}. 
+  \item Initialize \texttt{found\_physics = False, found\_ml = False}.
+  \item For each token in \texttt{physics\_lexicon}:
+    \begin{itemize}
+      \item If \texttt{token} is in \texttt{text} (substring or regex match), \texttt{found\_physics = True}, break.
+    \end{itemize}
+  \item For each token in \texttt{ml\_lexicon}:
+    \begin{itemize}
+      \item If \texttt{token} is in \texttt{text}, \texttt{found\_ml = True}, break.
+    \end{itemize}
+  \item Return \texttt{found\_physics \&\& found\_ml}.
+\end{enumerate}
+
+\subsubsection{Classifier-Based Filtering}
+\begin{enumerate}
+  \item \texttt{prob = model.predict\_relevance(text)} returns a float \([0, 1]\).
+  \item Compare with \texttt{config.classifier\_threshold}, typically 0.5 or 0.7.
+  \item Keep the reference if \texttt{prob} >= threshold, else discard.
+\end{enumerate}
+
+\subsubsection{AbstractAugmenter Fallback Logic}
+\begin{enumerate}
+  \item Maintain a list \texttt{scrapers} in desired priority, e.g. \texttt{[SemanticScholarScraper, OpenAlexScraper, ArxivScraper, GoogleScholarScraper]}.
+  \item For each \texttt{ref} lacking \texttt{abstract}:
+    \begin{enumerate}
+      \item If \texttt{ref.title} or \texttt{ref.doi} is found in \texttt{cache}, use it immediately.
+      \item Otherwise:
+        \begin{itemize}
+          \item For each \texttt{scraper} in \texttt{scrapers}:
+            \begin{enumerate}
+              \item \texttt{abstract = scraper.get\_abstract(ref)}
+              \item If not \texttt{None}, set \texttt{ref.abstract = abstract}, store in cache, break.
+            \end{enumerate}
+        \end{itemize}
+      \item If no scraper succeeds, \texttt{ref.abstract} remains \texttt{None}.
+    \end{enumerate}
+\end{enumerate}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Error Handling, Logging, and Monitoring}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Exception Handling Strategy}
+\begin{itemize}
+  \item \textbf{Parsing Exceptions}: If a `.bib` file is malformed, \texttt{BibFileParser} may throw \texttt{ParsingError}. We \emph{catch} it in \texttt{InputParser.parse\_references}, log the filename, and continue with the next file.
+  \item \textbf{Augmentation Exceptions}: 
+    \begin{itemize}
+      \item If a scraper fails (e.g., network error, rate limit), it throws \texttt{AugmentationError} or returns \texttt{None}. The \texttt{AbstractAugmenter} logs this error, tries the next scraper.
+      \item \emph{Partial success} is always favored over halting the pipeline.
+    \end{itemize}
+  \item \textbf{Filtering Exceptions}: Typically none, but if the \texttt{ClassifierFilter} model is missing or corrupted, we log a warning and degrade to \emph{lexicon-only} filtering if feasible.
+  \item \textbf{Export Exceptions}: If writing the output file fails, we log an \texttt{ExportError} with the path. Possibly attempt writing to an alternative file or a temporary file.
+\end{itemize}
+
+\subsection{Logging Approach}
+\begin{itemize}
+  \item Use Python’s built-in \texttt{logging} module:
+    \begin{itemize}
+      \item \texttt{logging.info("Starting parse for file: \%s", file\_path)}
+      \item \texttt{logging.error("Augmentation failed for reference: \%s, reason: \%s", ref.bibtex\_key, e)}
+    \end{itemize}
+  \item Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  \item \textbf{Optional JSON Logs}: The system can be configured to produce JSON logs for better machine parsing.
+\end{itemize}
+
+\subsection{Monitoring}
+\begin{itemize}
+  \item If run on a server, logs can be centralized via standard logging frameworks (\texttt{ELK}, \texttt{Graylog}, etc.).
+  \item The system can produce a \emph{summary report} at the end with:
+    \begin{itemize}
+      \item Number of references parsed
+      \item Number of references with newly found abstracts
+      \item Number of references passing the filter
+    \end{itemize}
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Security and Access Control}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{API Keys and Tokens}
+\begin{itemize}
+  \item The code must \emph{never} print or log API keys in plaintext.
+  \item Keys are stored in the \texttt{Config} object, read from environment variables or a secure config file.
+\end{itemize}
+
+\subsection{HTTPS for External Calls}
+\begin{itemize}
+  \item All scraper plugins must use \texttt{requests} with HTTPS endpoints, if supported by the external service.
+\end{itemize}
+
+\subsection{Local File Permissions}
+\begin{itemize}
+  \item The system logs and generated `.bib` files might contain partial personal data (authors, etc.). The user is responsible for local file permission settings.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Performance Considerations}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Profiling Strategy}
+\begin{itemize}
+  \item Use Python’s \texttt{cProfile} or a similar tool to identify bottlenecks when processing large datasets (e.g., 100K references).
+  \item Focus on:
+    \begin{enumerate}
+      \item \texttt{AbstractAugmenter} concurrency for I/O requests.
+      \item \texttt{FilterEngine} if classification is CPU-heavy.
+    \end{enumerate}
+\end{itemize}
+
+\subsection{Caching and Bulk Operations}
+\begin{itemize}
+  \item \textbf{Local Cache} for storing \texttt{(title, doi) -> abstract}, reducing repeated calls if the pipeline re-runs.
+  \item If external APIs support \emph{bulk queries}, we can design specialized scrapers for batch retrieval. This is an optimization that can be implemented if needed.
+\end{itemize}
+
+\subsection{Concurrency Approaches}
+\begin{itemize}
+  \item Default: \texttt{ThreadPoolExecutor} for augmentation. 
+  \item CPU-bound tasks for classification: \texttt{multiprocessing} or possibly GPU-based inference if the classification model is large.
+  \item The design is flexible; these concurrency details are set in \texttt{config} or command-line arguments.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Testing and Quality Assurance}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Unit Testing}
+\begin{itemize}
+  \item Each module has a corresponding \texttt{test\_MODULE.py}:
+    \begin{itemize}
+      \item \texttt{test\_inputparser.py}: checks whether malformed `.bib` is handled, references are parsed correctly.
+      \item \texttt{test\_abstractaugmenter.py}: mocks external HTTP calls to ensure logic for fallback is correct.
+      \item \texttt{test\_filterengine.py}: tries references with known titles/abstracts to confirm lexicon or classification thresholds.
+      \item \texttt{test\_exporter.py}: checks that the final `.bib` is syntactically valid.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Integration Testing}
+\begin{itemize}
+  \item \textbf{End-to-End Tests}: Provide a small directory of `.bib` files, run the entire pipeline with real scrapers or mocked scrapers, confirm the final `.bib` matches expected references.
+  \item \textbf{Multiple Config Scenarios}: 
+    \begin{itemize}
+      \item Enable/disable classification.
+      \item Use different concurrency settings.
+      \item Different lexicon expansions.
+    \end{itemize}
+\end{itemize}
+
+\subsection{Code Review and Static Analysis}
+\begin{itemize}
+  \item \texttt{pylint}, \texttt{flake8} or \texttt{black} for code formatting and basic checks.
+  \item Pull requests require at least one reviewer’s approval (best practice in version control).
+\end{itemize}
+
+\subsection{Performance Testing}
+\begin{itemize}
+  \item Large-scale input tests (10K, 50K references) to measure total runtime and memory usage.
+  \item Monitor logs for time spent in augmentation or classification steps.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Implementation Plan}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Step-by-Step Guidance}
+\begin{enumerate}
+  \item \textbf{Set Up Repository Structure}:
+  \begin{verbatim}
+    aggregator/
+      config/
+      modules/
+        input_parser.py
+        abstract_augmenter.py
+        filter_engine.py
+        exporter.py
+        plugins/
+          scrapers/
+          classifiers/
+        shared/
+      tests/
+      main.py
+      README.md
+  \end{verbatim}
+
+  \item \textbf{Develop and Test \texttt{InputParser}}:
+    \begin{itemize}
+      \item Use \texttt{bibtexparser} to parse small sample `.bib` files.
+      \item Implement \texttt{parse\_references()}, apply invariants.
+      \item Write unit tests to handle corner cases (empty files, malformed entries).
+    \end{itemize}
+
+  \item \textbf{Implement Basic \texttt{AbstractAugmenter}}:
+    \begin{itemize}
+      \item Start with a \texttt{SemanticScholarScraper} plugin as a template.
+      \item Validate fallback logic. 
+      \item Use \texttt{unittest.mock} or \texttt{responses} to simulate external API calls in tests.
+    \end{itemize}
+
+  \item \textbf{Add \texttt{FilterEngine}}:
+    \begin{itemize}
+      \item Implement \texttt{LexiconFilter}.
+      \item Integrate user-provided lexicons. 
+      \item Write tests verifying that references with known keywords are accepted.
+    \end{itemize}
+
+  \item \textbf{(Optional) \texttt{ClassifierFilter}}:
+    \begin{itemize}
+      \item Either train a small model or mock the \texttt{predict\_relevance()} for testing.
+      \item Integrate threshold logic in \texttt{FilterEngine}.
+    \end{itemize}
+
+  \item \textbf{Implement \texttt{BibExporter}}:
+    \begin{itemize}
+      \item Convert final references back to `.bib` format. 
+      \item Unit test with a handful of references.
+    \end{itemize}
+
+  \item \textbf{Finalize CLI / \texttt{main.py}}:
+    \begin{itemize}
+      \item Accept \texttt{--config} or environment-based configs.
+      \item Orchestrate the pipeline steps: parse -> augment -> filter -> export.
+    \end{itemize}
+
+  \item \textbf{Integration \& Performance Testing}:
+    \begin{itemize}
+      \item Use a sample dataset of thousands of references. 
+      \item Measure performance. Optimize if needed (concurrency, caching).
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Version Control Guidelines}
+\begin{itemize}
+  \item Use \textbf{Git} for version control. 
+  \item Enforce \textbf{feature branches} for each module or functionality. 
+  \item Require \textbf{Pull Requests} with code reviews to merge changes into \texttt{main} or \texttt{master}.
+  \item \textbf{Continuous Integration} with a service like GitHub Actions or GitLab CI to run tests automatically on each push.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Appendices}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsection{Potential Data Structures for Multilingual Support (Future Work)}
+While the current design mainly assumes \emph{English text}, future expansions might store language codes or use multilingual text classification models. The pipeline design can be adapted by:
+\begin{itemize}
+  \item Tagging references with a language field (e.g., \texttt{lang = "en"}).
+  \item Storing separate lexicons per language.
+  \item Using a multi-language classification model if references come from non-English sources.
+\end{itemize}
+
+\subsection{Sample Config File}
+\begin{verbatim}
+root_dir: "./references"
+output_file: "curated.bib"
+invariants:
+  require_title: True
+  require_year: False
+
+lexicon_paths:
+  - "./lexicons/physics.txt"
+  - "./lexicons/ml.txt"
+
+concurrency: "thread"
+classifier_enabled: true
+classifier_threshold: 0.7
+
+# External service creds
+semantic_scholar_api_key: "YOUR_KEY"
+openalex_api_key: "YOUR_KEY"
+\end{verbatim}
+
+\subsection{References to Other Docs}
+\begin{itemize}
+  \item \emph{SRS}: Full requirement definitions (FR-1 through FR-8, plus NFR).
+  \item \emph{SAS}: High-level architecture, concurrency, data flow diagrams, plugin approach.
+\end{itemize}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section*{Conclusion}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+This SDS specifies the detailed design for a \textbf{Python-based} pipeline to parse and filter bibliographic entries at the intersection of \emph{physics and machine learning}. The design emphasizes \textbf{modularity}, \textbf{pipeline structure}, and \textbf{extensibility} via plugins. Coupled with robust error handling, logging, and concurrency options, the system can be scaled for large corpora while maintaining minimal false negatives and providing a curated, augmented `.bib` output for end users.
+
+\end{document}
